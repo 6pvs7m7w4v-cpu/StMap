@@ -2,7 +2,6 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 import pandas as pd
-import numpy as np
 
 # Opsætning af siden
 st.set_page_config(page_title="Stock-Map / RRG", layout="wide")
@@ -19,8 +18,8 @@ DEFAULT_WATCHLISTS = {
 if "watchlists" not in st.session_state:
     st.session_state.watchlists = DEFAULT_WATCHLISTS
 
-# SIDEBAR: Indstillinger og administration af watchlists
-st.sidebar.header("⚙️ Watchlist Indstillinger")
+# SIDEBAR: Bedre udnyttelse af pladsen (ingen skjulte expanders)
+st.sidebar.header("⚙️ Indstillinger")
 
 # 1. Vælg eksisterende watchlist
 selected_watchlist_name = st.sidebar.selectbox(
@@ -30,13 +29,16 @@ selected_watchlist_name = st.sidebar.selectbox(
 
 current_tickers = st.session_state.watchlists[selected_watchlist_name]
 
-# 2. Opret ny watchlist
-with st.sidebar.expander("➕ Opret ny watchlist"):
-    new_wl_name = st.text_input("Navn på ny watchlist:")
-    if st.button("Gem ny watchlist"):
-        if new_wl_name and new_wl_name not in st.session_state.watchlists:
-            st.session_state.watchlists[new_wl_name] = ["SPY"]
-            st.rerun()
+# 2. Opret ny watchlist direkte fremme i lyset
+st.sidebar.markdown("---")
+st.sidebar.subheader("➕ Opret ny watchlist")
+new_wl_name = st.sidebar.text_input("Navn på ny liste:")
+if st.sidebar.button("Gem ny liste"):
+    if new_wl_name and new_wl_name not in st.session_state.watchlists:
+        st.session_state.watchlists[new_wl_name] = ["SPY"]
+        st.rerun()
+
+st.sidebar.markdown("---")
 
 # 3. Vælg / fjern tickere i den aktuelt valgte watchlist
 active_tickers = st.sidebar.multiselect(
@@ -46,26 +48,30 @@ active_tickers = st.sidebar.multiselect(
 )
 
 # 4. Tilføj ny ticker til aktiv watchlist
-new_ticker = st.sidebar.text_input("Tilføj ticker (f.eks. AAPL):").strip().upper()
+new_ticker = st.sidebar.text_input("Tilføj ticker (f.eks. AAPL, EXV6.DE):").strip().upper()
 if st.sidebar.button("Tilføj til liste"):
     if new_ticker and new_ticker not in current_tickers:
         st.session_state.watchlists[selected_watchlist_name].append(new_ticker)
         st.rerun()
 
-# Vælg benchmark til RRG / Momentum (f.eks. ACWI eller SPY)
-benchmark = st.sidebar.selectbox("Benchmark til Relative Styrke", options=["ACWI", "SPY", "QQQ"], index=0)
+st.sidebar.markdown("---")
+# Vælg benchmark til RRG / Momentum
+benchmark = st.sidebar.selectbox("Benchmark til RRG", options=["ACWI", "SPY", "QQQ"], index=0)
 
 # Hovedvisning: Hent data
 if active_tickers:
     all_symbols = list(set(active_tickers + [benchmark]))
     
-    with st.spinner("Henter kurser og beregner momentum..."):
-        # Hent 1 års historisk data
+    with st.spinner("Henter kurser og beregner..."):
         raw_data = yf.download(all_symbols, period="1y", progress=False)
+        
+        # Håndtering af yfinance datastruktur (MultiIndex vs enkelt kolonne)
         if isinstance(raw_data.columns, pd.MultiIndex):
             data = raw_data["Close"]
         else:
-            data = raw_data[["Close"]].rename(columns={"Close": all_symbols[0]})
+            data = raw_data[["Close"]]
+            if len(all_symbols) == 1:
+                data.columns = all_symbols
 
     st.success("Data hentet succesfuldt!")
 
@@ -79,6 +85,8 @@ if active_tickers:
         for ticker in active_tickers:
             if ticker in data.columns:
                 fig_price.add_trace(go.Scatter(x=data.index, y=data[ticker], mode='lines', name=ticker))
+            elif len(data.columns) == 1:
+                fig_price.add_trace(go.Scatter(x=data.index, y=data.iloc[:, 0], mode='lines', name=active_tickers[0]))
         
         fig_price.update_layout(
             xaxis_title="Dato",
@@ -90,46 +98,58 @@ if active_tickers:
 
     # TAB 2: RRG & MOMENTUM MAP
     with tab2:
-        st.subheader("🧭 Momentum & Relativ Styrke (RRG-inspireret)")
-        st.markdown(f"Viser aktiernes relative styrke og momentum mod benchmark **{benchmark}** over de seneste 14 uger.")
+        st.subheader("🧭 Momentum & Relativ Styrke (RRG)")
+        st.markdown(f"Viser aktiernes relative styrke mod benchmark **{benchmark}**.")
 
-        if benchmark not in data.columns:
-            st.error(f"Benchmark {benchmark} mangler i data. Vælg et andet benchmark.")
+        # Sikre at benchmark findes i data
+        bm_col = None
+        for col in data.columns:
+            if benchmark in col:
+                bm_col = col
+                break
+
+        if bm_col is None:
+            st.error(f"Benchmark {benchmark} blev ikke fundet i de hentede data.")
         else:
-            # Beregn simpel relativ styrke (Ratio = Ticker / Benchmark) og momentum (ROC af ratio)
+            bm_prices = data[bm_col]
             rs_table = []
-            bm_prices = data[benchmark]
 
             for ticker in active_tickers:
-                if ticker != benchmark and ticker in data.columns:
-                    ticker_prices = data[ticker]
-                    # Relativ styrke ratio
-                    ratio = ticker_prices / bm_prices
-                    # Relativ Styrke (niveau over 14 uger) og Momentum (ROC på 4 uger af ratioen)
-                    rs_level = (ratio.iloc[-1] / ratio.rolling(60).mean().iloc[-1]) * 100
-                    rs_momentum = ((ratio.iloc[-1] / ratio.iloc[-20]) - 1) * 100
+                if ticker != benchmark:
+                    t_col = None
+                    for col in data.columns:
+                        if ticker in col:
+                            t_col = col
+                            break
                     
-                    rs_table.append({
-                        "Ticker": ticker,
-                        "Relativ Styrke (RS)": round(rs_level, 2),
-                        "Momentum (RS-Mom)": round(rs_momentum, 2)
-                    })
+                    if t_col is not None:
+                        ticker_prices = data[t_col]
+                        # Beregn ratio og sørg for at fjerne NaN-værdier
+                        ratio = (ticker_prices / bm_prices).dropna()
+                        
+                        if len(ratio) > 60:
+                            rs_level = (ratio.iloc[-1] / ratio.rolling(60).mean().iloc[-1]) * 100
+                            rs_momentum = ((ratio.iloc[-1] / ratio.iloc[-20]) - 1) * 100
+                            
+                            rs_table.append({
+                                "Ticker": ticker,
+                                "Relativ Styrke (RS)": round(float(rs_level), 2),
+                                "Momentum (RS-Mom)": round(float(rs_momentum), 2)
+                            })
 
             if rs_table:
                 df_rs = pd.DataFrame(rs_table)
 
-                # Scatter plot (RRG Kvadrant-lignende visning)
                 fig_rrg = go.Figure()
                 fig_rrg.add_trace(go.Scatter(
                     x=df_rs["Relativ Styrke (RS)"],
                     y=df_rs["Momentum (RS-Mom)"],
-                    mode='text+markers+text',
+                    mode='text+markers',
                     text=df_rs["Ticker"],
                     textposition="top center",
-                    marker=dict(size=12, color=['red' if m < 0 else 'green' for m in df_rs["Momentum (RS-Mom)"]])
+                    marker=dict(size=14, color=['#FF4B4B' if m < 0 else '#09AB3B' for m in df_rs["Momentum (RS-Mom)"]])
                 ))
 
-                # Tilføj akser og kvadranter (skæring ved 100 for RS og 0 for Momentum)
                 fig_rrg.add_hline(y=0, line_dash="dash", line_color="gray")
                 fig_rrg.add_vline(x=100, line_dash="dash", line_color="gray")
 
@@ -141,10 +161,8 @@ if active_tickers:
                 )
 
                 st.plotly_chart(fig_rrg, use_container_width=True)
-
-                # Vis også datatabel med tal
                 st.dataframe(df_rs, use_container_width=True)
             else:
-                st.info("Tilføj flere tickere ud over dit benchmark for at se RRG-kortet.")
+                st.info("Tilføj flere tickere ud over dit benchmark for at generere RRG-kortet.")
 else:
     st.warning("Vælg eller tilføj mindst én ticker i menuen til venstre.")
