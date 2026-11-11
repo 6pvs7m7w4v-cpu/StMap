@@ -1,38 +1,75 @@
 import streamlit as st
-import pandas as pd
 import yfinance as yf
+import plotly.graph_objects as go
 
+# Opsætning af siden
 st.set_page_config(page_title="Stock-Map / RRG", layout="wide")
 
 st.title("📊 Stock-Map: Tema Watch")
 
+# Standard-watchlists
+DEFAULT_WATCHLISTS = {
+    "Tema Watch": ["ACWI", "QQQ", "SMH", "SPY", "XLK"],
+    "Sektor ETF'er": ["EXV6.DE", "EXV1.DE", "EXV2.DE", "EXV3.DE"],
+}
+
+# Gem watchlists i Session State, så tilføjede tickere huskes under kørsel
+if "watchlists" not in st.session_state:
+    st.session_state.watchlists = DEFAULT_WATCHLISTS
+
+# SIDEBAR: Indstillinger
 st.sidebar.header("Indstillinger")
-watchlist_valgt = st.sidebar.selectbox("Vælg Watchlist", ["Tema Watch"])
-hale_længde = st.sidebar.slider("Hale-længde (uger)", 1, 30, 11)
 
-# Brug standard-tickere uden .DE for at sikre stabile data fra start
-tickers = ["SPY", "QQQ", "SMH", "ACWI", "XLK"]
+# 1. Vælg watchlist
+selected_watchlist_name = st.sidebar.selectbox(
+    "Vælg Watchlist", 
+    options=list(st.session_state.watchlists.keys())
+)
 
-st.write("Henter data for tickere...")
+current_tickers = st.session_state.watchlists[selected_watchlist_name]
 
-data_list = []
-for t in tickers:
-    try:
-        df = yf.download(t, period="1y", interval="1wk", progress=False)
-        if not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df = df.xs(t, axis=1, level=1)
-            close_col = 'Close' if 'Close' in df.columns else df.columns[0]
-            s = df[close_col].dropna()
-            if not s.empty:
-                temp_df = pd.DataFrame({t: s})
-                data_list.append(temp_df)
-    except Exception as e:
-        st.sidebar.warning(f"Kunne ikke hente {t}: {e}")
+# 2. Vælg / fjern tickere i den aktuelt valgte watchlist
+active_tickers = st.sidebar.multiselect(
+    "Aktive tickere i watchlist",
+    options=current_tickers,
+    default=current_tickers
+)
 
-if data_list:
-    df_all = pd.concat(data_list, axis=1).dropna(how="all")
+# 3. Tilføj en helt ny ticker til den valgte watchlist
+new_ticker = st.sidebar.text_input("Tilføj ny ticker (f.eks. AAPL eller EXV6.DE):").strip().upper()
+if st.sidebar.button("Tilføj ticker"):
+    if new_ticker and new_ticker not in current_tickers:
+        st.session_state.watchlists[selected_watchlist_name].append(new_ticker)
+        st.rerun()
+
+# Hovedvisning: Hent og vis data
+if active_tickers:
+    st.info(f"Henter data for: {', '.join(active_tickers)}...")
+    
+    # Hent historiske data via yfinance (1 år)
+    data = yf.download(active_tickers, period="1y")["Close"]
+    
     st.success("Data hentet succesfuldt!")
-    st.line_chart(df_all)
+
+    # Opret Plotly graf
+    fig = go.Figure()
+
+    # Hvis der kun er valgt 1 ticker, returnerer yfinance en Series i stedet for Dataframe
+    if len(active_tickers) == 1:
+        ticker = active_tickers[0]
+        fig.add_trace(go.Scatter(x=data.index, y=data, mode='lines', name=ticker))
+    else:
+        for ticker in active_tickers:
+            if ticker in data.columns:
+                fig.add_trace(go.Scatter(x=data.index, y=data[ticker], mode='lines', name=ticker))
+
+    fig.update_layout(
+        xaxis_title="Dato",
+        yaxis_title="Pris",
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=30, b=20)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
 else:
-    st.error("Kunne ikke hente data for nogen af tickerne.")
+    st.warning("Vælg eller tilføj mindst én ticker i menuen til venstre for at vise grafen.")
