@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 import pandas as pd
+import numpy as np
 
 # Opsætning af siden
 st.set_page_config(page_title="Stock-Map / RRG", layout="wide")
@@ -18,7 +19,7 @@ DEFAULT_WATCHLISTS = {
 if "watchlists" not in st.session_state:
     st.session_state.watchlists = DEFAULT_WATCHLISTS
 
-# SIDEBAR: Bedre udnyttelse af pladsen (ingen skjulte expanders)
+# SIDEBAR: Indstillinger
 st.sidebar.header("⚙️ Indstillinger")
 
 # 1. Vælg eksisterende watchlist
@@ -29,7 +30,7 @@ selected_watchlist_name = st.sidebar.selectbox(
 
 current_tickers = st.session_state.watchlists[selected_watchlist_name]
 
-# 2. Opret ny watchlist direkte fremme i lyset
+# 2. Opret ny watchlist
 st.sidebar.markdown("---")
 st.sidebar.subheader("➕ Opret ny watchlist")
 new_wl_name = st.sidebar.text_input("Navn på ny liste:")
@@ -55,17 +56,17 @@ if st.sidebar.button("Tilføj til liste"):
         st.rerun()
 
 st.sidebar.markdown("---")
-# Vælg benchmark til RRG / Momentum
+# Benchmark og historik-længde
 benchmark = st.sidebar.selectbox("Benchmark til RRG", options=["ACWI", "SPY", "QQQ"], index=0)
+history_weeks = st.sidebar.slider("Hale-historik (uger på RRG)", min_value=1, max_value=12, value=4)
 
 # Hovedvisning: Hent data
 if active_tickers:
     all_symbols = list(set(active_tickers + [benchmark]))
     
     with st.spinner("Henter kurser og beregner..."):
-        raw_data = yf.download(all_symbols, period="1y", progress=False)
+        raw_data = yf.download(all_symbols, period="2y", progress=False)
         
-        # Håndtering af yfinance datastruktur (MultiIndex vs enkelt kolonne)
         if isinstance(raw_data.columns, pd.MultiIndex):
             data = raw_data["Close"]
         else:
@@ -75,7 +76,7 @@ if active_tickers:
 
     st.success("Data hentet succesfuldt!")
 
-    # Opret faner til hhv. Prisgraf og RRG/Momentum Map
+    # Opret faner
     tab1, tab2 = st.tabs(["📈 Prisudvikling", "🧭 RRG & Momentum Map"])
 
     # TAB 1: PRISGRAF
@@ -85,8 +86,6 @@ if active_tickers:
         for ticker in active_tickers:
             if ticker in data.columns:
                 fig_price.add_trace(go.Scatter(x=data.index, y=data[ticker], mode='lines', name=ticker))
-            elif len(data.columns) == 1:
-                fig_price.add_trace(go.Scatter(x=data.index, y=data.iloc[:, 0], mode='lines', name=active_tickers[0]))
         
         fig_price.update_layout(
             xaxis_title="Dato",
@@ -96,72 +95,97 @@ if active_tickers:
         )
         st.plotly_chart(fig_price, use_container_width=True)
 
-    # TAB 2: RRG & MOMENTUM MAP
+    # TAB 2: RRG & MOMENTUM MAP MED HISTORIK-HALER
     with tab2:
-        st.subheader("🧭 Momentum & Relativ Styrke (RRG)")
-        st.markdown(f"Viser aktiernes relative styrke mod benchmark **{benchmark}**.")
+        st.subheader("🧭 RRG Momentum & Rotations-kort")
+        st.markdown(f"Viser udviklingen over de seneste **{history_weeks} uger** i forhold til **{benchmark}**.")
 
-        # Sikre at benchmark findes i data
-        bm_col = None
-        for col in data.columns:
-            if benchmark in col:
-                bm_col = col
-                break
+        bm_col = next((c for c in data.columns if benchmark in c), None)
 
         if bm_col is None:
             st.error(f"Benchmark {benchmark} blev ikke fundet i de hentede data.")
         else:
             bm_prices = data[bm_col]
-            rs_table = []
+            
+            # Resample til ugentlige data for renere RRG-beregning
+            weekly_data = data.resample('W').last()
+            weekly_bm = bm_prices.resample('W').last()
 
-            for ticker in active_tickers:
+            fig_rrg = go.Figure()
+            latest_table = []
+
+            # Farver til de enkelte tickere
+            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+
+            for idx, ticker in enumerate(active_tickers):
                 if ticker != benchmark:
-                    t_col = None
-                    for col in data.columns:
-                        if ticker in col:
-                            t_col = col
-                            break
+                    t_col = next((c for c in weekly_data.columns if ticker in c), None)
                     
                     if t_col is not None:
-                        ticker_prices = data[t_col]
-                        # Beregn ratio og sørg for at fjerne NaN-værdier
-                        ratio = (ticker_prices / bm_prices).dropna()
-                        
-                        if len(ratio) > 60:
-                            rs_level = (ratio.iloc[-1] / ratio.rolling(60).mean().iloc[-1]) * 100
-                            rs_momentum = ((ratio.iloc[-1] / ratio.iloc[-20]) - 1) * 100
-                            
-                            rs_table.append({
-                                "Ticker": ticker,
-                                "Relativ Styrke (RS)": round(float(rs_level), 2),
-                                "Momentum (RS-Mom)": round(float(rs_momentum), 2)
-                            })
+                        t_prices = weekly_data[t_col]
+                        ratio = (t_prices / weekly_bm).dropna()
 
-            if rs_table:
-                df_rs = pd.DataFrame(rs_table)
+                        if len(ratio) > 52:
+                            # Beregn RS-Ratio og RS-Momentum for ugentlige punkter
+                            rs_ratio = (ratio / ratio.rolling(52).mean()) * 100
+                            rs_mom = (ratio / ratio.shift(4)) * 100
 
-                fig_rrg = go.Figure()
-                fig_rrg.add_trace(go.Scatter(
-                    x=df_rs["Relativ Styrke (RS)"],
-                    y=df_rs["Momentum (RS-Mom)"],
-                    mode='text+markers',
-                    text=df_rs["Ticker"],
-                    textposition="top center",
-                    marker=dict(size=14, color=['#FF4B4B' if m < 0 else '#09AB3B' for m in df_rs["Momentum (RS-Mom)"]])
-                ))
+                            # Hent de seneste x ugers historik
+                            df_history = pd.DataFrame({
+                                "RS": rs_ratio.iloc[-(history_weeks + 1):],
+                                "Mom": rs_mom.iloc[-(history_weeks + 1):]
+                            }).dropna()
 
-                fig_rrg.add_hline(y=0, line_dash="dash", line_color="gray")
-                fig_rrg.add_vline(x=100, line_dash="dash", line_color="gray")
+                            if not df_history.empty:
+                                color = colors[idx % len(colors)]
 
+                                # 1. Tegn historik-stien (halen)
+                                fig_rrg.add_trace(go.Scatter(
+                                    x=df_history["RS"],
+                                    y=df_history["Mom"],
+                                    mode='lines+markers',
+                                    name=ticker,
+                                    line=dict(color=color, width=2, dash='dot'),
+                                    marker=dict(size=5, color=color),
+                                    showlegend=True
+                                ))
+
+                                # 2. Tegn den nyeste position som et stort fremhævet punkt med tekst
+                                latest_rs = df_history["RS"].iloc[-1]
+                                latest_mom = df_history["Mom"].iloc[-1]
+
+                                fig_rrg.add_trace(go.Scatter(
+                                    x=[latest_rs],
+                                    y=[latest_mom],
+                                    mode='markers+text',
+                                    text=[ticker],
+                                    textposition="top center",
+                                    marker=dict(size=14, color=color, symbol='circle'),
+                                    showlegend=False
+                                ))
+
+                                latest_table.append({
+                                    "Ticker": ticker,
+                                    "Relativ Styrke (RS)": round(float(latest_rs), 2),
+                                    "Momentum (RS-Mom)": round(float(latest_mom), 2)
+                                })
+
+            if latest_table:
+                # Tilføj akser og 100-kryds
+                fig_rrg.add_hline(y=100, line_dash="solid", line_color="rgba(150,150,150,0.5)")
+                fig_rrg.add_vline(x=100, line_dash="solid", line_color="rgba(150,150,150,0.5)")
+
+                # Tilføj kvadrant-baggrunde / labels (RRG standard: Leading, Weakening, Lagging, Improving)
                 fig_rrg.update_layout(
                     xaxis_title="Relativ Styrke (RS-Ratio vs Benchmark)",
                     yaxis_title="Momentum (RS-Momentum)",
                     hovermode="closest",
-                    margin=dict(l=20, r=20, t=30, b=20)
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
 
                 st.plotly_chart(fig_rrg, use_container_width=True)
-                st.dataframe(df_rs, use_container_width=True)
+                st.dataframe(pd.DataFrame(latest_table), use_container_width=True)
             else:
                 st.info("Tilføj flere tickere ud over dit benchmark for at generere RRG-kortet.")
 else:
