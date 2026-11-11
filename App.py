@@ -9,10 +9,11 @@ st.set_page_config(page_title="Stock-Map / RRG", layout="wide")
 
 st.title("📊 Stock-Map: Watchlist & RRG Momentum")
 
-# Standard-watchlists
+# Standard-watchlists med dine primære lister
 DEFAULT_WATCHLISTS = {
     "Tema Watch": ["ACWI", "QQQ", "SMH", "SPY", "XLK"],
     "Sektor ETF'er": ["EXV6.DE", "EXV1.DE", "EXV2.DE", "EXV3.DE"],
+    "Kombineret Alle": ["ACWI", "QQQ", "SMH", "SPY", "XLK", "EXV6.DE", "EXV1.DE", "EXV2.DE", "EXV3.DE"],
 }
 
 # Gem watchlists i Session State
@@ -84,8 +85,12 @@ if active_tickers:
         st.subheader(f"Prisudvikling for: {selected_watchlist_name}")
         fig_price = go.Figure()
         for ticker in active_tickers:
-            if ticker in data.columns:
-                fig_price.add_trace(go.Scatter(x=data.index, y=data[ticker], mode='lines', name=ticker))
+            # Sikre robust opslag uanset yfinance kolonnestruktur
+            t_col = next((c for c in data.columns if ticker in c), None)
+            if t_col is not None:
+                fig_price.add_trace(go.Scatter(x=data.index, y=data[t_col], mode='lines', name=ticker))
+            elif len(data.columns) == 1:
+                fig_price.add_trace(go.Scatter(x=data.index, y=data.iloc[:, 0], mode='lines', name=ticker))
         
         fig_price.update_layout(
             xaxis_title="Dato",
@@ -114,7 +119,6 @@ if active_tickers:
             fig_rrg = go.Figure()
             latest_table = []
 
-            # Farver til de enkelte tickere
             colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
 
             for idx, ticker in enumerate(active_tickers):
@@ -126,11 +130,9 @@ if active_tickers:
                         ratio = (t_prices / weekly_bm).dropna()
 
                         if len(ratio) > 52:
-                            # Beregn RS-Ratio og RS-Momentum for ugentlige punkter
                             rs_ratio = (ratio / ratio.rolling(52).mean()) * 100
                             rs_mom = (ratio / ratio.shift(4)) * 100
 
-                            # Hent de seneste x ugers historik
                             df_history = pd.DataFrame({
                                 "RS": rs_ratio.iloc[-(history_weeks + 1):],
                                 "Mom": rs_mom.iloc[-(history_weeks + 1):]
@@ -139,7 +141,7 @@ if active_tickers:
                             if not df_history.empty:
                                 color = colors[idx % len(colors)]
 
-                                # 1. Tegn historik-stien (halen)
+                                # Hale / historik-linje
                                 fig_rrg.add_trace(go.Scatter(
                                     x=df_history["RS"],
                                     y=df_history["Mom"],
@@ -150,7 +152,7 @@ if active_tickers:
                                     showlegend=True
                                 ))
 
-                                # 2. Tegn den nyeste position som et stort fremhævet punkt med tekst
+                                # Seneste punkt
                                 latest_rs = df_history["RS"].iloc[-1]
                                 latest_mom = df_history["Mom"].iloc[-1]
 
@@ -171,11 +173,9 @@ if active_tickers:
                                 })
 
             if latest_table:
-                # Tilføj akser og 100-kryds
                 fig_rrg.add_hline(y=100, line_dash="solid", line_color="rgba(150,150,150,0.5)")
                 fig_rrg.add_vline(x=100, line_dash="solid", line_color="rgba(150,150,150,0.5)")
 
-                # Tilføj kvadrant-baggrunde / labels (RRG standard: Leading, Weakening, Lagging, Improving)
                 fig_rrg.update_layout(
                     xaxis_title="Relativ Styrke (RS-Ratio vs Benchmark)",
                     yaxis_title="Momentum (RS-Momentum)",
